@@ -19,6 +19,7 @@
     "multer": "^1.4.5-lts.1",
     "oauth-1.0a": "^2.2.6",
     "request": "^2.88.2",
-    "twitter-api-v2": "^1.19.0"
+    "twitter-api-v2": "^1.19.1",
+    "uuid": "^11.0.5"
   }
 }
