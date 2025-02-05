@@ -6,6 +6,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { TwitterApi } = require('twitter-api-v2');
 const { createClient } = require('@supabase/supabase-js');
+const { encrypt, decrypt } = require('./helpers/cryptoHelpers');  // from the snippet above
 
 // 1. Connect to Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -32,23 +33,27 @@ app.post('/api/credentials', async (req, res) => {
   try {
     const { ownerUserId, apiKey, apiSecret, accessToken, accessSecret } = req.body;
 
-    // Validate input
     if (!ownerUserId || !apiKey || !apiSecret || !accessToken || !accessSecret) {
       return res.status(400).json({ error: 'All credentials are required.' });
     }
 
-    // Insert new row into "twitter_accounts" table
+    // Encrypt each credential
+    const encryptedApiKey = encrypt(apiKey);
+    const encryptedApiSecret = encrypt(apiSecret);
+    const encryptedAccessToken = encrypt(accessToken);
+    const encryptedAccessSecret = encrypt(accessSecret);
+
+    // Insert into Supabase
     const { data, error } = await supabase
       .from('twitter_accounts')
       .insert([{
-        id: uuidv4(),
         owner_user_id: ownerUserId,
-        twitter_api_key: apiKey,
-        twitter_api_secret: apiSecret,
-        twitter_access_token: accessToken,
-        twitter_access_secret: accessSecret
+        twitter_api_key: encryptedApiKey,
+        twitter_api_secret: encryptedApiSecret,
+        twitter_access_token: encryptedAccessToken,
+        twitter_access_secret: encryptedAccessSecret
       }])
-      .select('*')  // Return inserted row(s)
+      .select('*');
 
     if (error) {
       console.error('Supabase insert error:', error);
@@ -93,6 +98,10 @@ app.get('/api/credentials/:ownerUserId', async (req, res) => {
  * (C) POST /api/tweet/:accountId
  * Post a tweet (with optional images or one video) for a specific Twitter account
  */
+/**
+ * (C) POST /api/tweet/:accountId
+ * Post a tweet (with optional images or one video) for a specific Twitter account
+ */
 app.post('/api/tweet/:accountId', upload.fields([
   { name: 'images', maxCount: 4 },
   { name: 'video', maxCount: 1 }
@@ -107,58 +116,68 @@ app.post('/api/tweet/:accountId', upload.fields([
       return res.status(400).json({ error: 'Tweet text is required' });
     }
 
-    // 1. Retrieve the specified Twitter account from Supabase
-    const { data: accounts, error } = await supabase
+    // 1. Fetch the encrypted credentials from Supabase
+    const { data: account, error } = await supabase
       .from('twitter_accounts')
       .select('*')
       .eq('id', accountId)
-      .limit(1)
       .single();
 
     if (error) {
       console.error('Supabase select error:', error);
       return res.status(404).json({ error: 'Bot credentials not found' });
     }
-
-    if (!accounts) {
+    if (!account) {
       return res.status(404).json({ error: 'Bot credentials not found' });
     }
 
-    // 2. Initialize a Twitter client with these credentials
+    // 2. Decrypt the credentials (assuming you have a decrypt() helper)
+    const decryptedApiKey = decrypt(account.twitter_api_key);
+    const decryptedApiSecret = decrypt(account.twitter_api_secret);
+    const decryptedAccessToken = decrypt(account.twitter_access_token);
+    const decryptedAccessSecret = decrypt(account.twitter_access_secret);
+
+    // 3. Initialize the Twitter client with decrypted credentials
     const dynamicTwitterClient = new TwitterApi({
-      appKey: accounts.twitter_api_key,
-      appSecret: accounts.twitter_api_secret,
-      accessToken: accounts.twitter_access_token,
-      accessSecret: accounts.twitter_access_secret,
+      appKey: decryptedApiKey,
+      appSecret: decryptedApiSecret,
+      accessToken: decryptedAccessToken,
+      accessSecret: decryptedAccessSecret,
     });
 
     const rwClient = dynamicTwitterClient.readWrite;
 
-    // 3. Handle images or video
+    // 4. Handle image or video uploads
     let mediaIds = [];
 
-    // Images
+    // If images are provided
     if (imageFiles && imageFiles.length > 0) {
       for (const file of imageFiles) {
         const mediaId = await rwClient.v1.uploadMedia(file.path);
         mediaIds.push(mediaId);
-        fs.unlinkSync(file.path); // remove temp file
+
+        // Delete the temp file after upload
+        fs.unlinkSync(file.path);
       }
     }
 
-    // Video
+    // If a video is provided
     if (videoFile && videoFile.length > 0) {
       if (mediaIds.length > 0) {
-        return res.status(400).json({ error: 'Cannot upload both images and videos in a single tweet.' });
+        return res
+          .status(400)
+          .json({ error: 'Cannot upload both images and videos in a single tweet.' });
       }
 
       console.log('Uploading video:', videoFile[0].path);
       const mediaId = await rwClient.v1.uploadMedia(videoFile[0].path, { mimeType: 'video/mp4' });
       mediaIds.push(mediaId);
+
+      // Delete the temp file after upload
       fs.unlinkSync(videoFile[0].path);
     }
 
-    // 4. Post the tweet
+    // 5. Post the tweet with optional media
     const tweet = await rwClient.v2.tweet(text, {
       media: mediaIds.length > 0 ? { media_ids: mediaIds } : undefined,
     });
@@ -170,6 +189,7 @@ app.post('/api/tweet/:accountId', upload.fields([
     return res.status(500).json({ error: 'Failed to post tweet', details: error.message });
   }
 });
+
 
 /**
  * Root endpoint
