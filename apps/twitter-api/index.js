@@ -5,99 +5,93 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { TwitterApi } = require('twitter-api-v2');
+const { createClient } = require('@supabase/supabase-js');
 
+// 1. Connect to Supabase
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY; // or service_role key
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// 2. Initialize Express
 const app = express();
-
-// Optional: load PORT from .env
 const PORT = process.env.PORT || 8080;
 
-// Configure multer for file uploads
+// 3. Configure multer for file uploads
 const upload = multer({ dest: 'uploads/' });
 
-// Middleware to parse JSON body
+// 4. Middleware to parse JSON
 app.use(express.json());
 
-/**
- * Helper function: Read db.json
- */
-function readDB() {
-  const dbPath = path.join(__dirname, 'db.json');
-  const file = fs.readFileSync(dbPath, 'utf-8');
-  return JSON.parse(file);
-}
+// ============ ROUTES ============
 
 /**
- * Helper function: Write db.json
+ * (A) POST /api/credentials
+ * Store new Twitter credentials for a user
  */
-function writeDB(data) {
-  const dbPath = path.join(__dirname, 'db.json');
-  fs.writeFileSync(dbPath, JSON.stringify(data, null, 2));
-}
-
-/**
- * 1. POST /api/credentials
- *    Store new Twitter credentials for a user in db.json
- */
-app.post('/api/credentials', (req, res) => {
+app.post('/api/credentials', async (req, res) => {
   try {
     const { ownerUserId, apiKey, apiSecret, accessToken, accessSecret } = req.body;
 
-    // Validate the input
+    // Validate input
     if (!ownerUserId || !apiKey || !apiSecret || !accessToken || !accessSecret) {
       return res.status(400).json({ error: 'All credentials are required.' });
     }
 
-    // Read existing data
-    const dbData = readDB();
+    // Insert new row into "twitter_accounts" table
+    const { data, error } = await supabase
+      .from('twitter_accounts')
+      .insert([{
+        id: uuidv4(),
+        owner_user_id: ownerUserId,
+        twitter_api_key: apiKey,
+        twitter_api_secret: apiSecret,
+        twitter_access_token: accessToken,
+        twitter_access_secret: accessSecret
+      }])
+      .select('*')  // Return inserted row(s)
 
-    // Create a new account object
-    const newAccount = {
-      id: uuidv4(),               // Unique ID for this account
-      owner_user_id: ownerUserId,
-      twitter_api_key: apiKey,
-      twitter_api_secret: apiSecret,
-      twitter_access_token: accessToken,
-      twitter_access_secret: accessSecret,
-      created_at: new Date().toISOString()
-    };
+    if (error) {
+      console.error('Supabase insert error:', error);
+      return res.status(500).json({ error: 'Failed to store credentials in Supabase' });
+    }
 
-    // Add to the array
-    dbData.twitter_accounts.push(newAccount);
-
-    // Write back to db.json
-    writeDB(dbData);
-
-    return res.status(200).json({ success: true, account: newAccount });
-  } catch (error) {
-    console.error('Error storing credentials:', error);
+    return res.status(200).json({ success: true, account: data[0] });
+  } catch (err) {
+    console.error('Error storing credentials:', err);
     return res.status(500).json({ error: 'Failed to store credentials' });
   }
 });
 
 /**
- * 2. GET /api/credentials/:ownerUserId
- *    Retrieve all Twitter accounts for a particular owner user.
+ * (B) GET /api/credentials/:ownerUserId
+ * Retrieve all Twitter accounts for a particular owner user
  */
-app.get('/api/credentials/:ownerUserId', (req, res) => {
+app.get('/api/credentials/:ownerUserId', async (req, res) => {
   try {
     const { ownerUserId } = req.params;
 
-    const dbData = readDB();
-    // Filter by owner_user_id
-    const accounts = dbData.twitter_accounts.filter(
-      (acct) => acct.owner_user_id === ownerUserId
-    );
+    // Fetch accounts from Supabase
+    const { data, error } = await supabase
+      .from('twitter_accounts')
+      .select('*')
+      .eq('owner_user_id', ownerUserId);
 
-    return res.status(200).json({ accounts });
-  } catch (error) {
-    console.error('Error fetching credentials:', error);
+    if (error) {
+      console.error('Supabase select error:', error);
+      return res.status(500).json({ error: 'Failed to fetch credentials from Supabase' });
+    }
+
+    // Return all accounts for that user
+    return res.status(200).json({ accounts: data });
+  } catch (err) {
+    console.error('Error fetching credentials:', err);
     return res.status(500).json({ error: 'Failed to fetch credentials' });
   }
 });
 
 /**
- * 3. POST /api/tweet/:accountId
- *    Post a tweet (with optional images or one video) for a specific Twitter account (bot).
+ * (C) POST /api/tweet/:accountId
+ * Post a tweet (with optional images or one video) for a specific Twitter account
  */
 app.post('/api/tweet/:accountId', upload.fields([
   { name: 'images', maxCount: 4 },
@@ -113,24 +107,34 @@ app.post('/api/tweet/:accountId', upload.fields([
       return res.status(400).json({ error: 'Tweet text is required' });
     }
 
-    // 1. Read db.json & find the specified account
-    const dbData = readDB();
-    const botAccount = dbData.twitter_accounts.find((acct) => acct.id === accountId);
+    // 1. Retrieve the specified Twitter account from Supabase
+    const { data: accounts, error } = await supabase
+      .from('twitter_accounts')
+      .select('*')
+      .eq('id', accountId)
+      .limit(1)
+      .single();
 
-    if (!botAccount) {
+    if (error) {
+      console.error('Supabase select error:', error);
+      return res.status(404).json({ error: 'Bot credentials not found' });
+    }
+
+    if (!accounts) {
       return res.status(404).json({ error: 'Bot credentials not found' });
     }
 
     // 2. Initialize a Twitter client with these credentials
     const dynamicTwitterClient = new TwitterApi({
-      appKey: botAccount.twitter_api_key,
-      appSecret: botAccount.twitter_api_secret,
-      accessToken: botAccount.twitter_access_token,
-      accessSecret: botAccount.twitter_access_secret
+      appKey: accounts.twitter_api_key,
+      appSecret: accounts.twitter_api_secret,
+      accessToken: accounts.twitter_access_token,
+      accessSecret: accounts.twitter_access_secret,
     });
+
     const rwClient = dynamicTwitterClient.readWrite;
 
-    // 3. Handle images/videos
+    // 3. Handle images or video
     let mediaIds = [];
 
     // Images
@@ -138,15 +142,12 @@ app.post('/api/tweet/:accountId', upload.fields([
       for (const file of imageFiles) {
         const mediaId = await rwClient.v1.uploadMedia(file.path);
         mediaIds.push(mediaId);
-
-        // Delete file after upload
-        fs.unlinkSync(file.path);
+        fs.unlinkSync(file.path); // remove temp file
       }
     }
 
     // Video
     if (videoFile && videoFile.length > 0) {
-      // Disallow mixing images & video
       if (mediaIds.length > 0) {
         return res.status(400).json({ error: 'Cannot upload both images and videos in a single tweet.' });
       }
@@ -154,12 +155,10 @@ app.post('/api/tweet/:accountId', upload.fields([
       console.log('Uploading video:', videoFile[0].path);
       const mediaId = await rwClient.v1.uploadMedia(videoFile[0].path, { mimeType: 'video/mp4' });
       mediaIds.push(mediaId);
-
-      // Delete file after upload
       fs.unlinkSync(videoFile[0].path);
     }
 
-    // 4. Post tweet
+    // 4. Post the tweet
     const tweet = await rwClient.v2.tweet(text, {
       media: mediaIds.length > 0 ? { media_ids: mediaIds } : undefined,
     });
@@ -176,10 +175,11 @@ app.post('/api/tweet/:accountId', upload.fields([
  * Root endpoint
  */
 app.get('/', (req, res) => {
-  res.send('Welcome to the multi-bot Twitter API server (JSON-based)!');
+  res.send('Welcome to the multi-bot Twitter API server with Supabase!');
 });
 
-// Start server
+// ============ START THE SERVER ============
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
