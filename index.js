@@ -25,6 +25,14 @@ app.use(express.json());
 
 // ============ ROUTES ============
 
+
+// /**
+//  * Root endpoint
+//  */
+app.get('/', (req, res) => {
+  res.send('Welcome to the multi-bot Twitter API server with Supabase!');
+});
+
 /**
  * (A) POST /api/credentials
  * Store new Twitter credentials for a user
@@ -191,15 +199,11 @@ app.post('/api/tweet/:accountId', upload.fields([
 });
 
 
-/**
- * Root endpoint
- */
-app.get('/', (req, res) => {
-  res.send('Welcome to the multi-bot Twitter API server with Supabase!');
-});
 
 // ============ START THE SERVER ============
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+export default app;
