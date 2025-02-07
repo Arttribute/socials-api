@@ -18,7 +18,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // 3. Configure multer for file uploads
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ storage: multer.memoryStorage() });
 
 // 4. Middleware to parse JSON
 app.use(express.json());
