@@ -164,7 +164,7 @@ gcloud run deploy discord-api --timeout=120s --image gcr.io/socials-api/discord-
 ---
 
 ## **👨‍💻 Contributors**
-- **Your Name (@adala-wanyande)**
+- **Adala Wanyande (@adala-wanyande)**
 
 ---
 
