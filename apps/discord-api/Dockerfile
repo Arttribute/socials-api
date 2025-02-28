@@ -10,11 +10,14 @@ COPY package.json package-lock.json ./
 # Install dependencies
 RUN npm install
 
-# Copy source code
+# Copy all source files
 COPY . .
 
-# Expose port
-EXPOSE 3000
+# Compile TypeScript
+RUN npm run build
+
+# Expose correct port
+EXPOSE 8080
 
 # Start the server
-CMD ["npm", "start"]
+CMD ["node", "dist/index.js"]
